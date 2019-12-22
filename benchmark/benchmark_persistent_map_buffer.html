@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>benchmark</title>
+</head>
+
+<body>
+    <canvas id="webgl" width="400" height="400">
+        Please use a browser that supports "canvas"
+    </canvas>
+
+    <script type="module">
+        import { mat4, vec3 } from '../utils/matrix.js';
+        import { cubeVertexArray, cubeVertexSize, cubeColorOffset, cubePositionOffset } from '../utils/cube.js';
+
+        import glslangModule from '../utils/glslang.js';
+
+
+
+        function setBufferDataBySetSubData(uniformBuffer, mvpMatricesData) {
+            uniformBuffer.setSubData(0, mvpMatricesData);
+        }
+
+
+        function setBufferDataByPersistentMapBuffer(device, commandEncoder, uniformBufferSize, uniformBuffer, mvpMatricesData) {
+            const [srcBuffer, arrayBuffer] = device.createBufferMapped({
+                size: uniformBufferSize,
+                usage: GPUBufferUsage.COPY_SRC
+            });
+
+
+            new Float32Array(arrayBuffer).set(mvpMatricesData);
+            srcBuffer.unmap();
+
+
+            commandEncoder.copyBufferToBuffer(srcBuffer, 0, uniformBuffer, 0, uniformBufferSize);
+            const commandBuffer = commandEncoder.finish();
+
+            const queue = device.defaultQueue;
+            queue.submit([commandBuffer]);
+
+            srcBuffer.destroy();
+        }
+
+
+        async function init(canvas) {
+            const vertexShaderGLSL = `#version 450
+  #define MAX_NUM_INSTANCES 160000
+  layout(set = 0, binding = 0) uniform Uniforms {
+    mat4 modelViewProjectionMatrix[MAX_NUM_INSTANCES];
+  } uniforms;
+
+  void main() {
+    gl_Position = uniforms.modelViewProjectionMatrix[gl_InstanceIndex] * vec4(1.0);
+  }`;
+
+            const fragmentShaderGLSL = `#version 450
+  layout(location = 0) out vec4 outColor;
+
+  void main() {
+    outColor = vec4(1.0);
+  }`;
+
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice({});
+            const glslang = await glslangModule();
+
+            const context = canvas.getContext('gpupresent');
+
+            const swapChain = context.configureSwapChain({
+                device,
+                format: "bgra8unorm"
+            });
+
+            const uniformsBindGroupLayout = device.createBindGroupLayout({
+                bindings: [{
+                    binding: 0,
+                    visibility: 1,
+                    type: "uniform-buffer"
+                }]
+            });
+
+            const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [uniformsBindGroupLayout] });
+            const pipeline = device.createRenderPipeline({
+                layout: pipelineLayout,
+
+                vertexStage: {
+                    module: device.createShaderModule({
+                        code: glslang.compileGLSL(vertexShaderGLSL, "vertex")
+                    }),
+                    entryPoint: "main"
+                },
+                fragmentStage: {
+                    module: device.createShaderModule({
+                        code: glslang.compileGLSL(fragmentShaderGLSL, "fragment")
+                    }),
+                    entryPoint: "main"
+                },
+
+                primitiveTopology: "triangle-list",
+                colorStates: [{
+                    format: "bgra8unorm",
+                }],
+            });
+
+            const renderPassDescriptor = {
+                colorAttachments: [{
+                    // attachment is acquired in render loop.
+                    attachment: undefined,
+
+                    loadValue: { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
+                }]
+            };
+
+            const numInstances = 160000;
+            const matrixFloatCount = 16; // 4x4 matrix
+            const matrixSize = 4 * matrixFloatCount;
+            const uniformBufferSize = numInstances * matrixSize;
+
+            const uniformBuffer = device.createBuffer({
+                size: uniformBufferSize,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+
+            const uniformBindGroup = device.createBindGroup({
+                layout: uniformsBindGroupLayout,
+                bindings: [{
+                    binding: 0,
+                    resource: {
+                        buffer: uniformBuffer,
+                    }
+                }],
+            });
+
+            let mvpMatricesData = new Float32Array(matrixFloatCount * numInstances);
+
+            function updateTransformationMatrix() {
+                for (let i = 0; i < numInstances; i++) {
+                    mvpMatricesData[i] = Math.random();
+                }
+            }
+
+
+
+            updateTransformationMatrix();
+
+
+            var lastTime = null;
+
+            function frame(time) {
+                if (lastTime !== null) {
+                    console.log(time - lastTime);
+                }
+
+                lastTime = time;
+
+
+
+                renderPassDescriptor.colorAttachments[0].attachment = swapChain.getCurrentTexture().createView();
+
+                const commandEncoder = device.createCommandEncoder({});
+
+
+
+                setBufferDataBySetSubData(uniformBuffer, mvpMatricesData);
+                // setBufferDataByPersistentMapBuffer(device, commandEncoder, uniformBufferSize, uniformBuffer, mvpMatricesData);
+
+
+
+
+
+                const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+                passEncoder.setPipeline(pipeline);
+                passEncoder.setBindGroup(0, uniformBindGroup);
+                passEncoder.draw(1, numInstances, 0, 0);
+
+                passEncoder.endPass();
+
+                device.defaultQueue.submit([commandEncoder.finish()]);
+
+                requestAnimationFrame(frame);
+            }
+
+            requestAnimationFrame(frame);
+        }
+
+        init(document.querySelector("canvas"))
+    </script>
+
+</body>
+
+</html>

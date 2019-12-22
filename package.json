@@ -1,0 +1,14 @@
+{
+    "name": "webgpu-sample",
+    "version": "0.0.1",
+    "authors": "yyc",
+    "license": "mit",
+    "scripts": {
+    },
+    "devDependencies": {
+
+    },
+    "dependencies": {
+        "gl-matrix": "^3.1.0"
+    }
+}
