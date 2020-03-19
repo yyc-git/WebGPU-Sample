@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>ray tracing</title>
+</head>
+
+<body>
+    <canvas id="webgl" width="900" height="450">
+        Please use a browser that supports "canvas"
+    </canvas>
+
+    <script type="module">
+        import glslangModule from '../../../utils/glslang.js';
+
+        import { trace_vertex } from './shaders/trace_vertex.js';
+        import { trace_fragment } from './shaders/trace_fragment.js';
+
+        import {
+            init as initCamera,
+            computeCameraUniformData,
+            getLookFrom,
+            getTarget,
+        } from './camera.js';
+
+        import { createTextureFromImage } from '../../../utils/helpers.js';
+
+
+        export async function init(canvas) {
+            const vertexShaderGLSL = trace_vertex;
+            const fragmentShaderGLSL = trace_fragment;
+
+            initCamera(canvas);
+
+
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice();
+            const glslang = await glslangModule();
+
+            const context = canvas.getContext('gpupresent');
+
+            const swapChainFormat = "bgra8unorm";
+
+            // @ts-ignore:
+            const swapChain = context.configureSwapChain({
+                device,
+                format: swapChainFormat,
+            });
+
+
+            const vertexSize = 4 * 2; // Byte size of one vertex.
+            const positionOffset = 0;
+            const vertexArray = new Float32Array([
+                -2, 0,
+                0, -2,
+                2, 2
+            ]);
+
+            const verticesBuffer = device.createBuffer({
+                size: vertexArray.byteLength,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+            });
+            verticesBuffer.setSubData(0, vertexArray);
+
+
+            const bindGroupLayout = device.createBindGroupLayout({
+                bindings: [{
+                    binding: 0,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    type: "uniform-buffer"
+                }, {
+                    // Sampler
+                    binding: 1,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    type: "sampler"
+                }, {
+                    // Texture view
+                    binding: 2,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    type: "sampled-texture"
+                }, {
+                    binding: 3,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    type: "uniform-buffer"
+                }]
+            });
+
+
+            const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+            const pipeline = device.createRenderPipeline({
+                layout: pipelineLayout,
+
+                vertexStage: {
+                    module: device.createShaderModule({
+                        code: glslang.compileGLSL(vertexShaderGLSL, "vertex")
+                    }),
+                    entryPoint: "main"
+                },
+                fragmentStage: {
+                    module: device.createShaderModule({
+                        code: glslang.compileGLSL(fragmentShaderGLSL, "fragment")
+                    }),
+                    entryPoint: "main"
+                },
+                primitiveTopology: "triangle-list",
+                // depthStencilState: {
+                //     depthWriteEnabled: false
+                //     // depthCompare: "less",
+                //     // format: "depth24plus-stencil8",
+                // },
+                vertexState: {
+                    vertexBuffers: [{
+                        arrayStride: vertexSize,
+                        attributes: [{
+                            shaderLocation: 0,
+                            offset: positionOffset,
+                            format: "float2"
+                        }]
+                    }],
+                },
+                // rasterizationState: {
+                //     cullMode: 'none',
+                // },
+                colorStates: [{
+                    format: "bgra8unorm",
+                }],
+            });
+
+            const renderPassDescriptor = {
+                colorAttachments: [{
+                    attachment: undefined,
+
+                    loadValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                }]
+            };
+
+
+            const movementUniformBuffer = device.createBuffer({
+                size: 4 * 1,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            const cameraUniformBuffer = device.createBuffer({
+                size: 4 * 3 * 4,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+
+            const texture = await createTextureFromImage(device, './assets/images/logo.png', GPUTextureUsage.SAMPLED);
+
+            const sampler = device.createSampler({
+                magFilter: "nearest",
+                minFilter: "nearest",
+            });
+
+            const uniformBindGroup = device.createBindGroup({
+                layout: bindGroupLayout,
+                bindings: [{
+                    binding: 0,
+                    resource: {
+                        buffer: movementUniformBuffer,
+                    },
+                }, {
+                    binding: 1,
+                    resource: sampler,
+                }, {
+                    binding: 2,
+                    resource: texture.createView(),
+                }, {
+                    binding: 3,
+                    resource: {
+                        buffer: cameraUniformBuffer,
+                    },
+                }],
+            });
+
+
+            function _buildCameraUniformBufferData(canvas) {
+                var [
+                    cameraOrigin,
+                    cameraHorizontal,
+                    cameraVertical,
+                    cameraLowerLeft
+                ] = computeCameraUniformData(
+                    getLookFrom(),
+                    getTarget(),
+                    [0, 1, 0],
+                    60,
+                    canvas.width / canvas.height
+                );
+
+
+                const bufferData = new Float32Array(
+                    3 * 4
+                );
+                bufferData.set(cameraOrigin, 0);
+                bufferData.set(cameraHorizontal, 3);
+                bufferData.set(cameraVertical, 6);
+                bufferData.set(cameraLowerLeft, 9);
+
+                return bufferData;
+            }
+
+            function _frame(time) {
+                renderPassDescriptor.colorAttachments[0].attachment = swapChain.getCurrentTexture().createView();
+
+                const commandEncoder = device.createCommandEncoder({});
+                const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+                passEncoder.setPipeline(pipeline);
+                passEncoder.setBindGroup(0, uniformBindGroup);
+                passEncoder.setVertexBuffer(0, verticesBuffer);
+                passEncoder.draw(3, 1, 0, 0);
+                passEncoder.endPass();
+
+                device.defaultQueue.submit([commandEncoder.finish()]);
+
+
+                movementUniformBuffer.setSubData(0, new Float32Array([
+                    0.001 * time
+                ]));
+                cameraUniformBuffer.setSubData(0, _buildCameraUniformBufferData(canvas));
+
+
+                requestAnimationFrame(_frame);
+            }
+
+            requestAnimationFrame(_frame);
+        }
+
+        init(document.querySelector("canvas"))
+    </script>
+
+</body>
+
+</html>
